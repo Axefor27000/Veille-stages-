@@ -42,9 +42,9 @@ EMOJIS = {
     "Anper": "🟥",
     "ActiROUTE": "🟫",
 }
-SOURCES = {"srp-eure": "stage-recuperation-points.com", "pdv-louviers": "site Points De Vue",
-           "pdv-vernon": "site Points De Vue", "anper": "site Anper",
-           "actiroute": "site Actiroute"}
+SOURCES = {"srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
+           "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
+           "actiroute": "actiroute.com"}
 STATUTS = {"dispo": "places disponibles", "dernieres": "dernières places", "complet": "complet",
            "clos": "inscriptions closes", "ouvert": "inscriptions ouvertes", "?": ""}
 
@@ -122,7 +122,8 @@ def phrase_evenement(e):
     if e["start"]:
         s = date.fromisoformat(e["start"])
         d = f"{s.day} {MOIS_C[s.month]}"
-    qui = f"{e['organiser']}, {e['city']}, {d}"
+    site = SOURCES.get(e["source"], e["source"])
+    qui = f"{e['organiser']}, {e['city']}, {d} (sur {site})"
     t = e["type"]
     if t == "NOUVEAU":
         return "Nouveau stage", f"{qui} : {e['price_new']} €"
@@ -138,6 +139,13 @@ def phrase_evenement(e):
     return t, qui
 
 
+def prix_supports(prix, gras=True):
+    """« 199 € sur stage-pointsdevue.fr · 235 € sur stage-recuperation-points.com »"""
+    items = sorted(prix.items(), key=lambda x: (x[1], x[0]))
+    b0, b1 = ("<b>", "</b>") if gras else ("", "")
+    return " · ".join(f"{b0}{v} €{b1} sur {esc(k)}" for k, v in items)
+
+
 def puce(org, texte, gras=True):
     c = couleur(org)
     return (f'<span style="display:inline-block;background:{c};color:#fff;border-radius:10px;'
@@ -146,22 +154,13 @@ def puce(org, texte, gras=True):
 
 def ligne_stage(m):
     c = couleur(m["organiser"])
-    prix = m["prix"]
-    p_min = min(prix.values())
-    detail = ""
-    if len(set(prix.values())) > 1:
-        detail = " · ".join(f"{v} € ({esc(k)})" for k, v in sorted(prix.items(), key=lambda x: x[1]))
-        prix_txt = f"<b>{p_min} €</b>"
-    else:
-        prix_txt = f"<b>{p_min} €</b>"
     statut = STATUTS.get(m["statut"], "")
     if m["places"] is not None and m["statut"] in ("ouvert",):
         statut = f"{m['places']} places restantes"
-    extra = " · ".join(x for x in [statut, detail] if x)
     return (f'<tr><td style="border-left:6px solid {c};padding:6px 10px;background:#fafafa">'
             f'<span style="color:{c};font-weight:bold">{esc(m["organiser"])}</span> '
-            f'· {esc(m["city"])} · {prix_txt}'
-            + (f'<br><span style="color:#555;font-size:12px">{extra}</span>' if extra else "")
+            f'· {esc(m["city"])}<br><span style="font-size:13px">{prix_supports(m["prix"])}</span>'
+            + (f'<br><span style="color:#555;font-size:12px">{statut}</span>' if statut else "")
             + "</td></tr>"
             '<tr><td style="height:4px;line-height:4px;font-size:4px">&nbsp;</td></tr>')
 
@@ -262,7 +261,7 @@ def construire(data, nb_semaines, demo, test, now):
         h.append('<table style="border-collapse:collapse;width:100%;font-size:14px">')
         for m in sorted(ecarts, key=lambda m: m["start"]):
             c = couleur(m["organiser"])
-            det = " · ".join(f"{v} € ({esc(k)})" for k, v in sorted(m["prix"].items(), key=lambda x: x[1]))
+            det = prix_supports(m["prix"], gras=False) + f" (écart {max(m['prix'].values()) - min(m['prix'].values())} €)"
             h.append(f'<tr><td style="border-left:6px solid {c};padding:5px 10px;background:#fafafa">'
                      f'<b>{esc(m["organiser"])}</b> · {esc(m["city"])} · {m["start"].day} '
                      f'{MOIS_C[m["start"].month]}<br><span style="font-size:12px;color:#555">{det}'
@@ -309,7 +308,7 @@ def construire_email(data, nb_semaines, demo, test, now):
     if demo:
         lignes.append("<i>Exemples fictifs, uniquement pour montrer la mise en forme :</i>")
         lignes += [
-            f"{emo('Points De Vue')} <b>Prix en baisse</b> · Points De Vue, Louviers, 7 déc. : 235 → 199 € <i>(détecté le 26/11 07h10)</i>",
+            f"{emo('Points De Vue')} <b>Prix en baisse</b> · Points De Vue, Louviers, 7 déc. (sur stage-recuperation-points.com) : 235 → 199 € <i>(détecté le 26/11 07h10)</i>",
             f"{emo('Point Permis Prevention')} <b>Nouveau stage</b> · Point Permis Prevention, Bernay, 25 janv. : 262 € <i>(détecté le 26/11 11h42)</i>",
             f"{emo('Automobile Club Association')} <b>Stage supprimé</b> · Automobile Club Association, Évreux, 15 déc. à J-19 (dernier statut : places disponibles) <i>(détecté le 26/11 15h05)</i>",
         ]
@@ -333,26 +332,21 @@ def construire_email(data, nb_semaines, demo, test, now):
             g = sorted(groupes[(s_, e_)], key=lambda m: (not m["own"], m["organiser"], m["city"]))
             rows = []
             for m in g:
-                prix = m["prix"]
                 st = STATUTS.get(m["statut"], "")
                 if m["places"] is not None and m["statut"] == "ouvert":
                     st = f"{m['places']} places restantes"
-                det = ""
-                if len(set(prix.values())) > 1:
-                    det = " [" + " / ".join(f"{v} € {esc(k)}" for k, v in
-                                            sorted(prix.items(), key=lambda x: x[1])) + "]"
                 rows.append(f"{emo(m['organiser'])} <b>{esc(m['organiser'])}</b> · {esc(m['city'])} · "
-                            f"<b>{min(prix.values())} €</b>" + (f" · {st}" if st else "") + det)
+                            f"{prix_supports(m['prix'])}" + (f" · {st}" if st else ""))
             h.append(f"<p><b>{esc(label_jours(s_, e_))} = {len(g)} stage{'s' if len(g) != 1 else ''}</b><br>"
                      + "<br>".join(rows) + "</p>")
 
     ecarts = [m for m in stages if len(set(m["prix"].values())) > 1]
     if ecarts:
-        h.append("<hr><h3>Écarts de prix entre sites</h3><p>Un même stage affiché à des prix différents selon le site.<br>")
+        h.append("<hr><h3>Écarts de prix entre sites</h3><p>Un même stage vendu à des prix différents selon le support.<br>")
         h.append("<br>".join(
             f"{emo(m['organiser'])} <b>{esc(m['organiser'])}</b> · {esc(m['city'])} · {m['start'].day} "
-            f"{MOIS_C[m['start'].month]} : " + " / ".join(f"{v} € ({esc(k)})" for k, v in
-                                                          sorted(m['prix'].items(), key=lambda x: x[1]))
+            f"{MOIS_C[m['start'].month]} : {prix_supports(m['prix'], gras=False)} "
+            f"(écart {max(m['prix'].values()) - min(m['prix'].values())} €)"
             for m in sorted(ecarts, key=lambda m: m["start"])) + "</p>")
     h.append("<hr><p><i>Sources : stage-recuperation-points.com, sites de Points De Vue, d'Anper et d'Actiroute. "
              "Mobilité Club n'est pas encore suivi.</i></p>")

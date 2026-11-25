@@ -488,8 +488,13 @@ def should_notify(e):
     return e["type"] == "PLACES" and str(e["places_new"]) == "0"
 
 
+SITE = {"srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
+        "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
+        "actiroute": "actiroute.com"}
+
+
 def message(e):
-    who = f"{e['organiser']} {e['city']}"
+    who = f"{e['organiser']} {e['city']} (sur {SITE.get(e['source'], e['source'])})"
     d = fmt_range(e["start"] or None, e["end"] or None)
     t = e["type"]
     if t == "NOUVEAU":
