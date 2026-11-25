@@ -373,8 +373,9 @@ def diff(now, prev, cur):
     for k, p in prev.items():
         if k in cur:
             continue
-        end = date.fromisoformat(p["end"]) if p.get("end") else None
-        etype = "TERMINE" if end and end < today else "SUPPRIME"
+        # un stage qui disparaît le jour de son début, ou après, n'est pas une annulation
+        began = date.fromisoformat(p["start"]) if p.get("start") else None
+        etype = "TERMINE" if began and began <= today else "SUPPRIME"
         days = (date.fromisoformat(p["start"]) - today).days if p.get("start") else ""
         ev.append(event(now, etype, p, price_old=p["price"], status_old=p["status"],
                         days_before=days))
