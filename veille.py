@@ -433,7 +433,46 @@ def parse_actiroute(content, src, agr):
 
 
 def parse_axefor(content, src, agr):
-    """Site d'Axéfor : un bloc par stage, avec le n° d'identification, le prix et les places."""
+    """Site d'Axéfor : un bloc par stage, qui commence par « Du jj/mm/aaaa au jj/mm/aaaa » et contient
+    le prix, l'adresse (donc la ville), les places et le n° d'identification. On découpe le texte de la
+    page sur ces débuts de bloc, ce qui ne dépend pas de la structure HTML."""
+    soup = BeautifulSoup(content, "html.parser")
+    text = clean(soup.get_text(" "))
+    marks = list(re.finditer(r"Du \d{2}/\d{2}/\d{4} au \d{2}/\d{2}/\d{4}", text))
+    out = {}
+    for i, mk in enumerate(marks):
+        fin = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        bloc = text[mk.start():min(fin, mk.start() + 450)]
+        num = re.search(r"\b(\d{2})R(\d{14,16})\b", bloc)
+        if num:
+            bloc = bloc[:num.end() + 20]  # le reste (bas de page) n'appartient pas au stage
+        start, end = parse_dates(bloc)
+        pm = PRICE.search(bloc)
+        if not start or not pm:
+            continue
+        city = find_city(bloc)
+        agrement = "R" + num.group(2)[:10] if num else src["agrement"]
+        key = "axefor:" + (num.group(0) if num else f"{city}|{start.isoformat()}")
+        n = norm(bloc)
+        places = None
+        mp = (re.search(r"places?\s+disponibles?\D{0,6}(\d+)", n)
+              or re.search(r"(\d+)\s+places?\s+disponibles?", n))
+        if "complet" in n:
+            status, places = "complet", 0
+        elif mp:
+            status, places = "ouvert", int(mp.group(1))
+        else:
+            status = "?"
+        out[key] = make_rec(src, key, city, start, end, int(pm.group(1)), status, places, agrement,
+                            num.group(0) if num else None,
+                            int(num.group(2)[10:] or 0) if num else None, src["url"], agr)
+    if out:
+        return list(out.values())
+    return parse_axefor_cartes(content, src, agr)  # secours : ancienne méthode, si la page change
+
+
+def parse_axefor_cartes(content, src, agr):
+    """Ancienne méthode (cartes détectées par la structure HTML), gardée en secours."""
     soup = BeautifulSoup(content, "html.parser")
     out = {}
     for node, txt in generic_cards(soup):

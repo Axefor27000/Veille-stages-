@@ -353,6 +353,151 @@ def construire_email(data, nb_semaines, demo, test, now):
     return "\n".join(h)
 
 
+LARGEUR = 40  # caractères par ligne dans un cadre (lisible sur iPhone en portrait)
+
+
+def _wrap(texte, prefixe="", cont="   "):
+    """Découpe un texte brut en lignes courtes (le gras est ajouté après)."""
+    import textwrap
+    return textwrap.wrap(texte, width=LARGEUR - 2 - len(prefixe), subsequent_indent=cont) or [""]
+
+
+def cadre(titre_html, lignes_html):
+    """Un encadré : coin haut avec titre, barre à gauche, coin bas (pas de bord droit : les émojis
+    n'ont pas la largeur d'un caractère, un bord droit serait décalé)."""
+    corps = "\n".join(("┃ " + l) if l else "┃" for l in lignes_html)
+    return f"<pre>┏━ {titre_html}\n{corps}\n┗{'━' * (LARGEUR - 6)}</pre>"
+
+
+JOURS_C = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+
+
+def label_jours_court(start, end):
+    def j(d):
+        return f"{JOURS_C[d.weekday()]} {'1er' if d.day == 1 else d.day}"
+    if start == end:
+        return j(start).capitalize()
+    a, b = j(start), j(end)
+    if start.month != end.month:
+        a += f" {MOIS_C[start.month]}"
+        b += f" {MOIS_C[end.month]}"
+    return f"{a} + {b}".capitalize()
+
+
+def lignes_stage(m):
+    plein = f"{emo(m['organiser'])} {m['organiser']} · {m['city']}"
+    if len(plein) <= LARGEUR - 2:
+        out = [f"{emo(m['organiser'])} <b>{esc(m['organiser'])}</b> · {esc(m['city'])}"]
+    else:  # trop long : la ville passe à la ligne
+        out = [f"{emo(m['organiser'])} <b>{esc(m['organiser'])}</b>", f"   {esc(m['city'])}"]
+    prix = sorted(m["prix"].items(), key=lambda x: (x[1], x[0]))
+    for k, v in prix:
+        out.append(f"   <b>{v} €</b> · {esc(k)}")
+    if len(set(m["prix"].values())) > 1:
+        out.append(f"   ⇄ écart de {max(m['prix'].values()) - min(m['prix'].values())} € entre supports")
+    # on n'affiche le statut que s'il est notable (« places disponibles » = bruit)
+    st = ""
+    if m["statut"] in ("dernieres", "complet", "clos"):
+        st = STATUTS[m["statut"]]
+    elif m["places"] is not None and m["statut"] == "ouvert":
+        st = f"{m['places']} places restantes"
+    if st:
+        out.append(f"   ⚠ {esc(st)}")
+    return out
+
+
+def construire_email_cadres(data, nb_semaines, demo, test, now):
+    """Mise en page « un encadré par semaine » : uniquement des balises acceptées par l'envoi d'e-mail
+    (h2, p, pre, b). La couleur de chaque organisme = un carré d'émoji."""
+    today = now.date()
+    stages = [m for m in charger(data) if m["end"] >= today]
+    lundi0 = today - timedelta(days=today.weekday())
+    semaines = [lundi0 + timedelta(weeks=i) for i in range(nb_semaines)]
+    fin = semaines[-1] + timedelta(days=6)
+    stages = [m for m in stages if m["start"] <= fin]
+    h = []
+    if test:
+        h.append("<p><b>TEST</b> : nouvelle mise en page (un encadré par semaine).</p>")
+    h.append(f"<h2>Veille stages Eure</h2><p>Point du {jour(today)} {MOIS[today.month]} {today.year} · "
+             f"{nb_semaines} semaines à venir</p>")
+
+    cnt = defaultdict(int)
+    for m in stages:
+        cnt[m["organiser"]] += 1
+    ordre = sorted(cnt, key=lambda o: (o != "Axéfor", -cnt[o], o))
+    n_ax = cnt.get("Axéfor", 0)
+    brief = [f"<b>{len(stages)} stages</b> sur la période",
+             f"dont {n_ax} Axéfor, {len(stages) - n_ax} concurrents", ""]
+    brief += [f"{emo(o)} {esc(o)} : <b>{cnt[o]}</b>" for o in ordre]
+    h.append(cadre("<b>EN BREF</b>", brief))
+
+    # événements des dernières 24 h
+    lignes = []
+    evs = evenements(data, now - timedelta(hours=24))
+    items = []
+    for e in evs:
+        t, txt = phrase_evenement(e)
+        ts = datetime.fromisoformat(e["ts"]).astimezone(TZ).strftime("%d/%m %Hh%M")
+        items.append((e["organiser"], t, txt, ts, False))
+    if demo:
+        items += [
+            ("Points De Vue", "Prix en baisse", "Points De Vue, Louviers, 7 déc. (sur stage-recuperation-points.com) : 235 → 199 €", "26/11 07h10", True),
+            ("Point Permis Prevention", "Nouveau stage", "Point Permis Prevention, Bernay, 25 janv. : 262 €", "26/11 11h42", True),
+            ("Automobile Club Association", "Stage supprimé", "Automobile Club Association, Évreux, 15 déc. à J-19 (dernier statut : places disponibles)", "26/11 15h05", True),
+        ]
+    for org, t, txt, ts, fictif in items:
+        brut = f"{emo(org)} {t} · {txt} (détecté le {ts}){' [exemple]' if fictif else ''}"
+        ls = [esc(x) for x in _wrap(brut)]
+        ls[0] = ls[0].replace(esc(t), f"<b>{esc(t)}</b>", 1)
+        lignes += ls + [""]
+    if not lignes:
+        lignes = ["Aucun changement détecté."]
+    else:
+        lignes = lignes[:-1]
+    titre_ev = "<b>ÉVÉNEMENTS DES DERNIÈRES 24 H</b>"
+    h.append(cadre(titre_ev, lignes))
+    if demo:
+        h.append("<p><i>Les 3 événements marqués [exemple] sont fictifs, uniquement pour montrer la mise en forme.</i></p>")
+
+    h.append("<h3>Semaine par semaine</h3>")
+    for lundi in semaines:
+        dim = lundi + timedelta(days=6)
+        sem = [m for m in stages if lundi <= m["start"] <= dim]
+        titre = f"<b>{esc(label_semaine(lundi).upper())}</b>"
+        if not sem:
+            h.append(cadre(titre, ["Aucun stage."]))
+            continue
+        n_ax = sum(1 for m in sem if m["own"])
+        n_co = len(sem) - n_ax
+        corps = [f"<b>{len(sem)} stage{'s' if len(sem) != 1 else ''}</b> · {n_ax} Axéfor, "
+                 f"{n_co} concurrent{'s' if n_co > 1 else ''}"]
+        ordre_sem = sorted(sem, key=lambda m: (not m["own"], m["organiser"], m["start"]))
+        carres = [emo(m["organiser"]) for m in ordre_sem]
+        for i in range(0, len(carres), 12):
+            corps.append("".join(carres[i:i + 12]))
+        groupes = defaultdict(list)
+        for m in sem:
+            groupes[(m["start"], m["end"])].append(m)
+        for (s_, e_) in sorted(groupes):
+            g = sorted(groupes[(s_, e_)], key=lambda m: (not m["own"], m["organiser"], m["city"]))
+            j = (s_ - today).days
+            corps.append("")
+            lab = label_jours_court(s_, e_)
+            suite = (f"{len(g)} stage{'s' if len(g) != 1 else ''}"
+                     + (f" · J-{j}" if j > 0 else " · aujourd'hui" if j == 0 else ""))
+            if len(lab) + 3 + len(suite) <= LARGEUR - 2:
+                corps.append(f"<b>{esc(lab)}</b> · {suite}")
+            else:
+                corps += [f"<b>{esc(lab)}</b>", suite]
+            for m in g:
+                corps += lignes_stage(m)
+        h.append(cadre(titre, corps))
+
+    h.append("<p><i>Sources : stage-recuperation-points.com, sites d'Axéfor, de Points De Vue, d'Anper et "
+             "d'Actiroute. Mobilité Club n'est pas encore suivi.</i></p>")
+    return "\n".join(h)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=os.environ.get("DATA_DIR", "data"))
@@ -362,11 +507,14 @@ def main():
     ap.add_argument("--test", action="store_true")
     ap.add_argument("--email", action="store_true",
                     help="version e-mail (émojis de couleur, balises autorisées uniquement)")
+    ap.add_argument("--style", choices=["cadres", "simple"], default="simple",
+                    help="mise en page de la version e-mail (défaut : simple = version n°2 validée)")
     a = ap.parse_args()
     now = datetime.now(TZ)
     if a.email:
+        build = construire_email_cadres if a.style == "cadres" else construire_email
         with open(a.out, "w", encoding="utf-8") as f:
-            f.write(construire_email(a.data, a.weeks, a.demo, a.test, now))
+            f.write(build(a.data, a.weeks, a.demo, a.test, now))
         print(f"rapport e-mail écrit : {a.out}")
         return
     body = construire(a.data, a.weeks, a.demo, a.test, now)
