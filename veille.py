@@ -53,6 +53,9 @@ SOURCES = [
     {"id": "anper", "label": "Anper",
      "url": "https://www.permis-a-points-anper.com/stages-eure-27/", "parser": "anper",
      "agrement": "R1902700010"},
+    {"id": "axefor", "label": "axefor.fr (votre site)",
+     "url": "https://www.axefor.fr/le-permis-a-points.html", "parser": "axefor",
+     "agrement": "R2102700010"},
     {"id": "actiroute", "label": "Actiroute",
      "url": "https://www.actiroute.com/stage-permis-a-points-eure-27/", "parser": "actiroute",
      "agrement": "R1302700060", "browser": True},
@@ -81,7 +84,7 @@ MON_RE = r"(janv|fevr|mars|avr|mai|juin|juil|aout|sept|oct|nov|dec)[a-z]*\.?"
 WD_RE = r"(?:lun|mar|mer|jeu|ven|sam|dim)[a-z]*\.?"
 MONTH_LABELS = ["", "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août",
                 "sept.", "oct.", "nov.", "déc."]
-PRICE = re.compile(r"(\d{2,3})\s?€")
+PRICE = re.compile(r"(\d{2,3})(?:[.,]\d{1,2})?\s?€")
 
 
 def parse_dates(text, today=None):
@@ -99,6 +102,15 @@ def parse_dates(text, today=None):
         except ValueError:
             return None, None
 
+    rn = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d\d))?\s*(?:au|-|\u2013)\s*(\d{1,2})/(\d{1,2})/(20\d\d)", t)
+    if rn:
+        try:
+            y2 = int(rn.group(6))
+            y1 = int(rn.group(3)) if rn.group(3) else (y2 - 1 if int(rn.group(2)) > int(rn.group(5)) else y2)
+            return (date(y1, int(rn.group(2)), int(rn.group(1))),
+                    date(y2, int(rn.group(5)), int(rn.group(4))))
+        except ValueError:
+            return None, None
     r2 = re.search(r"\b(\d{1,2})\s+" + MON_RE + r"\s*[-\u2013]\s*(\d{1,2})\s+" + MON_RE, t)
     if r2:
         return build(int(r2.group(1)), MONTHS[r2.group(2)], int(r2.group(3)), MONTHS[r2.group(4)])
@@ -148,10 +160,16 @@ def fmt_range(start, end):
     return f"{s.day} {MONTH_LABELS[s.month]}-{e.day} {MONTH_LABELS[e.month]}"
 
 
+CITY_ALIASES = {"verneuil": "Verneuil d'Avre et d'Iton"}
+
+
 def find_city(text):
     n = norm(text)
     for c in CITIES:
         if norm(c) in n:
+            return c
+    for alias, c in CITY_ALIASES.items():
+        if alias in n:
             return c
     return "?"
 
@@ -414,7 +432,34 @@ def parse_actiroute(content, src, agr):
     return list(out.values())
 
 
-PARSERS = {"srp": parse_srp, "pdv": parse_pdv, "anper": parse_anper, "actiroute": parse_actiroute}
+def parse_axefor(content, src, agr):
+    """Site d'Axéfor : un bloc par stage, avec le n° d'identification, le prix et les places."""
+    soup = BeautifulSoup(content, "html.parser")
+    out = {}
+    for node, txt in generic_cards(soup):
+        start, end = parse_dates(txt)
+        num = re.search(r"\b(\d{2})R(\d{14,16})\b", txt)
+        city = find_city(txt)
+        agrement = "R" + num.group(2)[:10] if num else src["agrement"]
+        key = "axefor:" + (num.group(0) if num else f"{city}|{start.isoformat()}")
+        n = norm(txt)
+        places = None
+        mp = re.search(r"places?\s+disponibles?\D{0,6}(\d+)", n) or re.search(r"(\d+)\s+places?\s+disponibles?", n)
+        if "complet" in n:
+            status, places = "complet", 0
+        elif mp:
+            status, places = "ouvert", int(mp.group(1))
+        else:
+            status = "?"
+        price = int(PRICE.search(txt).group(1))
+        out[key] = make_rec(src, key, city, start, end, price, status, places, agrement,
+                            num.group(0) if num else None,
+                            int(num.group(2)[10:] or 0) if num else None, src["url"], agr)
+    return list(out.values())
+
+
+PARSERS = {"srp": parse_srp, "pdv": parse_pdv, "anper": parse_anper, "actiroute": parse_actiroute,
+           "axefor": parse_axefor}
 
 
 def learn_organiser(agr, code, url):
@@ -488,7 +533,7 @@ def should_notify(e):
     return e["type"] == "PLACES" and str(e["places_new"]) == "0"
 
 
-SITE = {"srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
+SITE = {"axefor": "axefor.fr", "srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
         "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
         "actiroute": "actiroute.com"}
 

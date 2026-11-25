@@ -42,7 +42,7 @@ EMOJIS = {
     "Anper": "🟥",
     "ActiROUTE": "🟫",
 }
-SOURCES = {"srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
+SOURCES = {"axefor": "axefor.fr", "srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
            "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
            "actiroute": "actiroute.com"}
 STATUTS = {"dispo": "places disponibles", "dernieres": "dernières places", "complet": "complet",
@@ -269,7 +269,7 @@ def construire(data, nb_semaines, demo, test, now):
         h.append("</table>")
 
     h.append('<div style="margin-top:18px;color:#777;font-size:12px">Sources : '
-             'stage-recuperation-points.com, sites de Points De Vue, d\'Anper et d\'Actiroute. '
+             'stage-recuperation-points.com, sites d\'Axéfor, de Points De Vue, d\'Anper et d\'Actiroute. '
              'Mobilité Club n\'est pas encore suivi.</div></div>')
     return "\n".join(h)
 
@@ -348,7 +348,7 @@ def construire_email(data, nb_semaines, demo, test, now):
             f"{MOIS_C[m['start'].month]} : {prix_supports(m['prix'], gras=False)} "
             f"(écart {max(m['prix'].values()) - min(m['prix'].values())} €)"
             for m in sorted(ecarts, key=lambda m: m["start"])) + "</p>")
-    h.append("<hr><p><i>Sources : stage-recuperation-points.com, sites de Points De Vue, d'Anper et d'Actiroute. "
+    h.append("<hr><p><i>Sources : stage-recuperation-points.com, sites d'Axéfor, de Points De Vue, d'Anper et d'Actiroute. "
              "Mobilité Club n'est pas encore suivi.</i></p>")
     return "\n".join(h)
 
