@@ -15,7 +15,7 @@ permissions:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
 
@@ -33,10 +33,36 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Veille
+      - name: Veille (sites simples)
         env:
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
           DATA_DIR: data
+        run: python veille.py
+
+      # Actiroute charge sa liste en JavaScript : il faut un vrai navigateur, plus lent.
+      # On ne le lance donc qu'une fois sur trois (toutes les 15 minutes environ).
+      - name: Actiroute à lancer ?
+        id: actiroute
+        run: |
+          m=$(date +%M)
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ $((10#$m % 15)) -lt 5 ]; then
+            echo "run=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Installer le navigateur
+        if: steps.actiroute.outputs.run == '1'
+        continue-on-error: true
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Veille Actiroute (navigateur)
+        if: steps.actiroute.outputs.run == '1'
+        continue-on-error: true
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+          DATA_DIR: data
+          MODE: browser
         run: python veille.py
 
       - name: Enregistrer l'historique

@@ -53,7 +53,15 @@ SOURCES = [
     {"id": "anper", "label": "Anper",
      "url": "https://www.permis-a-points-anper.com/stages-eure-27/", "parser": "anper",
      "agrement": "R1902700010"},
+    {"id": "axefor", "label": "axefor.fr (votre site)",
+     "url": "https://www.axefor.fr/le-permis-a-points.html", "parser": "axefor",
+     "agrement": "R2102700010"},
+    {"id": "actiroute", "label": "Actiroute",
+     "url": "https://www.actiroute.com/stage-permis-a-points-eure-27/", "parser": "actiroute",
+     "agrement": "R1302700060", "browser": True},
 ]
+# "http" : sites simples ; "browser" : sites qui chargent leur liste en JavaScript (Actiroute)
+MODE = os.environ.get("MODE", "http")
 
 CITIES = ["Évreux", "Louviers", "Vernon", "Bernay", "Pont-Audemer", "Les Andelys",
           "Le Neubourg", "Verneuil d'Avre et d'Iton", "Vironvay", "Gisors", "Gaillon",
@@ -76,13 +84,40 @@ MON_RE = r"(janv|fevr|mars|avr|mai|juin|juil|aout|sept|oct|nov|dec)[a-z]*\.?"
 WD_RE = r"(?:lun|mar|mer|jeu|ven|sam|dim)[a-z]*\.?"
 MONTH_LABELS = ["", "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août",
                 "sept.", "oct.", "nov.", "déc."]
-PRICE = re.compile(r"(\d{2,3})\s?€")
+PRICE = re.compile(r"(\d{2,3})(?:[.,]\d{1,2})?\s?€")
 
 
 def parse_dates(text, today=None):
     """Retourne (début, fin) ou (None, None). Gère '26 et 27 nov.', '30 Nov - 1 Déc'."""
     today = today or datetime.now(TZ).date()
     t = norm(text)
+    years = [int(y) for y in re.findall(r"\b(20\d\d)\b", t)]
+
+    def build(d1, m1, d2, m2):
+        try:
+            y1 = years[0] if years else today.year
+            if not years and date(y1, m1, d1) < today - timedelta(days=90):
+                y1 += 1
+            return date(y1, m1, d1), date(y1 + (1 if m2 < m1 else 0), m2, d2)
+        except ValueError:
+            return None, None
+
+    rn = re.search(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d\d))?\s*(?:au|-|\u2013)\s*(\d{1,2})/(\d{1,2})/(20\d\d)", t)
+    if rn:
+        try:
+            y2 = int(rn.group(6))
+            y1 = int(rn.group(3)) if rn.group(3) else (y2 - 1 if int(rn.group(2)) > int(rn.group(5)) else y2)
+            return (date(y1, int(rn.group(2)), int(rn.group(1))),
+                    date(y2, int(rn.group(5)), int(rn.group(4))))
+        except ValueError:
+            return None, None
+    r2 = re.search(r"\b(\d{1,2})\s+" + MON_RE + r"\s*[-\u2013]\s*(\d{1,2})\s+" + MON_RE, t)
+    if r2:
+        return build(int(r2.group(1)), MONTHS[r2.group(2)], int(r2.group(3)), MONTHS[r2.group(4)])
+    r1 = re.search(r"\b(\d{1,2})\s*[-\u2013]\s*(\d{1,2})\s+" + MON_RE, t)
+    if r1:
+        mo = MONTHS[r1.group(3)]
+        return build(int(r1.group(1)), mo, int(r1.group(2)), mo)
     days = [(m.start(), int(m.group(1))) for m in re.finditer(WD_RE + r"\s+(\d{1,2})\b", t)]
     if not days:
         days = [(m.start(), int(m.group(1)))
@@ -125,10 +160,16 @@ def fmt_range(start, end):
     return f"{s.day} {MONTH_LABELS[s.month]}-{e.day} {MONTH_LABELS[e.month]}"
 
 
+CITY_ALIASES = {"verneuil": "Verneuil d'Avre et d'Iton"}
+
+
 def find_city(text):
     n = norm(text)
     for c in CITIES:
         if norm(c) in n:
+            return c
+    for alias, c in CITY_ALIASES.items():
+        if alias in n:
             return c
     return "?"
 
@@ -150,6 +191,42 @@ def fetch(url):
             raise RuntimeError("page de vérification anti-robot")
         return r.content
     raise RuntimeError(f"réseau : {last}")
+
+
+def fetch_browser(url, more_text="Voir plus de stages", card_sel='a[href*="/stage-recuperation-de-points-"]'):
+    """Ouvre la page dans un vrai navigateur et clique sur « Voir plus » jusqu'à tout afficher."""
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            page = browser.new_page(user_agent=UA, locale="fr-FR")
+            page.goto(url, wait_until="networkidle", timeout=45000)
+            last = -1
+            for _ in range(15):
+                n = len(set(page.eval_on_selector_all(
+                    card_sel, "els => els.map(e => e.getAttribute('href'))")))
+                if n == last:
+                    break
+                last = n
+                btns = page.get_by_text(more_text, exact=False)
+                clicked = False
+                for i in range(btns.count()):
+                    if btns.nth(i).is_visible():
+                        try:
+                            btns.nth(i).click(timeout=5000)
+                            clicked = True
+                        except Exception:  # noqa: BLE001
+                            pass
+                        break
+                if not clicked:
+                    break
+                page.wait_for_timeout(2500)
+            content = page.content()
+        finally:
+            browser.close()
+    if len(content) < 30000 and "captcha" in content.lower()[:8000]:
+        raise RuntimeError("page de vérification anti-robot")
+    return content.encode("utf-8")
 
 
 def load_json(path, default):
@@ -316,7 +393,73 @@ def parse_anper(content, src, agr):
     return list(out.values())
 
 
-PARSERS = {"srp": parse_srp, "pdv": parse_pdv, "anper": parse_anper}
+def parse_actiroute(content, src, agr):
+    soup = BeautifulSoup(content, "html.parser")
+    pat = re.compile(r"/stage-recuperation-de-points-([0-9a-z]+)/?")
+
+    def ids_of(node):
+        return {pat.search(a["href"]).group(1) for a in node.find_all("a", href=pat)}
+
+    out = {}
+    for a in soup.find_all("a", href=pat):
+        sid = pat.search(a["href"]).group(1)
+        if sid in out:
+            continue
+        best, node = None, a
+        while node.parent is not None and node.parent.name not in ("body", "html", "[document]"):
+            node = node.parent
+            if ids_of(node) - {sid}:
+                break
+            txt = clean(node.get_text(" "))
+            if PRICE.search(txt) and parse_dates(txt)[0]:
+                best = node
+        if best is None:
+            continue
+        txt = clean(best.get_text(" "))
+        start, end = parse_dates(txt)
+        price = int(PRICE.search(txt).group(1))
+        ag = re.search(r"\bR\s?(\d{2})\s?(\d{3})\s?(\d{4})\s?(\d)\b", txt)
+        agrement = "R" + "".join(ag.groups()) if ag else src["agrement"]
+        url = a["href"]
+        if url.startswith("/"):
+            url = "https://www.actiroute.com" + url
+        key = "actiroute:" + sid
+        out[key] = make_rec(src, key, find_city(txt), start, end, price, "?", None, agrement,
+                            None, None, url, agr)
+    announced = re.search(r"(\d+)\s+stages?\s+de\s+recuperation", norm(soup.get_text(" ")))
+    if announced and len(out) < int(announced.group(1)):
+        raise RuntimeError(f"lecture incomplète : {len(out)} stages sur {announced.group(1)} annoncés")
+    return list(out.values())
+
+
+def parse_axefor(content, src, agr):
+    """Site d'Axéfor : un bloc par stage, avec le n° d'identification, le prix et les places."""
+    soup = BeautifulSoup(content, "html.parser")
+    out = {}
+    for node, txt in generic_cards(soup):
+        start, end = parse_dates(txt)
+        num = re.search(r"\b(\d{2})R(\d{14,16})\b", txt)
+        city = find_city(txt)
+        agrement = "R" + num.group(2)[:10] if num else src["agrement"]
+        key = "axefor:" + (num.group(0) if num else f"{city}|{start.isoformat()}")
+        n = norm(txt)
+        places = None
+        mp = re.search(r"places?\s+disponibles?\D{0,6}(\d+)", n) or re.search(r"(\d+)\s+places?\s+disponibles?", n)
+        if "complet" in n:
+            status, places = "complet", 0
+        elif mp:
+            status, places = "ouvert", int(mp.group(1))
+        else:
+            status = "?"
+        price = int(PRICE.search(txt).group(1))
+        out[key] = make_rec(src, key, city, start, end, price, status, places, agrement,
+                            num.group(0) if num else None,
+                            int(num.group(2)[10:] or 0) if num else None, src["url"], agr)
+    return list(out.values())
+
+
+PARSERS = {"srp": parse_srp, "pdv": parse_pdv, "anper": parse_anper, "actiroute": parse_actiroute,
+           "axefor": parse_axefor}
 
 
 def learn_organiser(agr, code, url):
@@ -373,8 +516,9 @@ def diff(now, prev, cur):
     for k, p in prev.items():
         if k in cur:
             continue
-        end = date.fromisoformat(p["end"]) if p.get("end") else None
-        etype = "TERMINE" if end and end < today else "SUPPRIME"
+        # un stage qui disparaît le jour de son début, ou après, n'est pas une annulation
+        began = date.fromisoformat(p["start"]) if p.get("start") else None
+        etype = "TERMINE" if began and began <= today else "SUPPRIME"
         days = (date.fromisoformat(p["start"]) - today).days if p.get("start") else ""
         ev.append(event(now, etype, p, price_old=p["price"], status_old=p["status"],
                         days_before=days))
@@ -389,8 +533,13 @@ def should_notify(e):
     return e["type"] == "PLACES" and str(e["places_new"]) == "0"
 
 
+SITE = {"axefor": "axefor.fr", "srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
+        "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
+        "actiroute": "actiroute.com"}
+
+
 def message(e):
-    who = f"{e['organiser']} {e['city']}"
+    who = f"{e['organiser']} {e['city']} (sur {SITE.get(e['source'], e['source'])})"
     d = fmt_range(e["start"] or None, e["end"] or None)
     t = e["type"]
     if t == "NOUVEAU":
@@ -442,16 +591,19 @@ def main():
     state = load_json(os.path.join(DATA, "state.json"), {"_meta": {}, "sources": {}})
     learned = load_json(os.path.join(DATA, "agrements.json"), {})
     agr = {**AGREMENTS, **learned}
-    all_events, notifs, stats, baselines = [], [], {}, []
+    all_events, notifs, baselines = [], [], []
+    stats = load_json(os.path.join(DATA, "last_run.json"), {})
     learn_budget = 3
 
     for src in SOURCES:
+        if bool(src.get("browser")) != (MODE == "browser"):
+            continue
         s = state["sources"].setdefault(src["id"], {"stages": {}, "fail": 0, "alerted": False,
                                                     "baseline": False})
         prev = s["stages"]
         content, err = None, None
         try:
-            content = fetch(src["url"])
+            content = fetch_browser(src["url"]) if src.get("browser") else fetch(src["url"])
             recs = PARSERS[src["parser"]](content, src, agr)
             if src["parser"] == "srp":
                 for r in recs:
