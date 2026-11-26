@@ -59,6 +59,12 @@ SOURCES = [
     {"id": "actiroute", "label": "Actiroute",
      "url": "https://www.actiroute.com/stage-permis-a-points-eure-27/", "parser": "actiroute",
      "agrement": "R1302700060", "browser": True},
+    # Mobilité Club : agrégateur lu comme un visiteur normal (vrai navigateur, robots.txt respecté).
+    # « calibration » : on enregistre la page et ce qui est compris, sans toucher à l'historique ni
+    # notifier, tant que la lecture n'a pas été vérifiée sur la vraie page.
+    {"id": "mobilite", "label": "Mobilité Club",
+     "url": "https://mobiliteclub.fr/stages-recuperations-de-points/haute-normandie/?page_index=1",
+     "parser": "mobilite", "browser": True, "paginate": "page_index", "calibration": True},
 ]
 # "http" : sites simples ; "browser" : sites qui chargent leur liste en JavaScript (Actiroute)
 MODE = os.environ.get("MODE", "http")
@@ -227,6 +233,65 @@ def fetch_browser(url, more_text="Voir plus de stages", card_sel='a[href*="/stag
     if len(content) < 30000 and "captcha" in content.lower()[:8000]:
         raise RuntimeError("page de vérification anti-robot")
     return content.encode("utf-8")
+
+
+def _anti_robot(titre, html_bas):
+    t = (titre or "").lower()
+    if any(k in t for k in ("just a moment", "attention required", "access denied", "un instant")):
+        return True
+    return len(html_bas) < 40000 and any(k in html_bas for k in (
+        "captcha", "cf-challenge", "challenge-platform", "just a moment", "are you a robot",
+        "etes-vous un robot", "êtes-vous un robot", "access denied"))
+
+
+def fetch_browser_pages(url, param="page_index", max_pages=4, pause_ms=3000):
+    """Lit les pages 1, 2, 3… d'une liste dans un vrai navigateur, comme un visiteur normal.
+    S'arrête (erreur) si robots.txt l'interdit, en cas de refus (401/403/429/503) ou de contrôle
+    anti-robot : on ne cherche jamais à contourner."""
+    from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+    from urllib.robotparser import RobotFileParser
+    from playwright.sync_api import sync_playwright
+    u = urlparse(url)
+    parts, vues = [], set()
+    with sync_playwright() as p:
+        browser = p.chromium.launch()
+        try:
+            ctx = browser.new_context(user_agent=UA, locale="fr-FR")
+            try:
+                rr = ctx.request.get(f"{u.scheme}://{u.netloc}/robots.txt", timeout=15000)
+                if rr.ok:
+                    rp = RobotFileParser()
+                    rp.parse(rr.text().splitlines())
+                    if not rp.can_fetch("*", url):
+                        raise PermissionError("robots.txt du site interdit la lecture automatique de cette page")
+            except PermissionError as e:
+                raise RuntimeError(str(e)) from e
+            except Exception:  # noqa: BLE001  (robots.txt illisible : on continue prudemment)
+                pass
+            page = ctx.new_page()
+            for n in range(1, max_pages + 1):
+                q = dict(parse_qsl(u.query))
+                q[param] = str(n)
+                resp = page.goto(urlunparse(u._replace(query=urlencode(q))),
+                                 wait_until="networkidle", timeout=45000)
+                status = resp.status if resp else 0
+                if status in (401, 403, 429, 503):
+                    raise RuntimeError(f"accès refusé (HTTP {status})")
+                html_page = page.content()
+                if _anti_robot(page.title(), html_page.lower()):
+                    raise RuntimeError("page de vérification anti-robot")
+                texte = clean(BeautifulSoup(html_page, "html.parser").get_text(" "))
+                sig = hash(texte)
+                if sig in vues or not PRICE.search(texte):
+                    break  # page déjà vue (fin de liste) ou sans stage
+                vues.add(sig)
+                parts.append(f"<!-- page {n} -->\n{html_page}")
+                page.wait_for_timeout(pause_ms)
+        finally:
+            browser.close()
+    if not parts:
+        raise RuntimeError("aucune page de stages reçue")
+    return "\n".join(parts).encode("utf-8")
 
 
 def load_json(path, default):
@@ -497,8 +562,49 @@ def parse_axefor_cartes(content, src, agr):
     return list(out.values())
 
 
+def parse_mobilite(content, src, agr):
+    """Mobilité Club (lecture tolérante, à caler sur la vraie page) : une carte par stage avec dates,
+    prix et ville ; l'organisateur est reconnu par son n° d'agrément ou par son nom."""
+    soup = BeautifulSoup(content, "html.parser")
+    out = {}
+    for node, txt in generic_cards(soup):
+        start, end = parse_dates(txt)
+        city = find_city(txt)
+        if city == "?" or not start:
+            continue
+        price = int(PRICE.search(txt).group(1))
+        n = norm(txt)
+        num = re.search(r"\b(\d{2})R(\d{14,16})\b", txt)
+        ag = re.search(r"\bR\s?(\d{2})\s?(\d{3})\s?(\d{4})\s?(\d)\b", txt)
+        agrement = ("R" + num.group(2)[:10]) if num else ("R" + "".join(ag.groups()) if ag else None)
+        if not agrement:
+            for code, nom in agr.items():
+                if norm(nom) in n:
+                    agrement = code
+                    break
+        links = [a.get("href", "") for a in node.find_all("a")]
+        m = re.search(r"(?:id|stage|session)[=/_-]?(\d{3,8})", " ".join(links))
+        key = "mobilite:" + (num.group(0) if num else m.group(1) if m else f"{city}|{start.isoformat()}|{price}")
+        places = None
+        mp = (re.search(r"places?\s+disponibles?\D{0,6}(\d+)", n)
+              or re.search(r"(\d+)\s+places?\s+(?:disponibles?|restantes?)", n))
+        if re.search(r"\bcomplet\b", n):
+            status, places = "complet", 0
+        elif mp:
+            status, places = "ouvert", int(mp.group(1))
+        else:
+            status = "?"
+        href = next((x for x in links if x), src["url"])
+        if href.startswith("/"):
+            href = "https://mobiliteclub.fr" + href
+        out[key] = make_rec(src, key, city, start, end, price, status, places, agrement,
+                            num.group(0) if num else None,
+                            int(num.group(2)[10:] or 0) if num else None, href, agr)
+    return list(out.values())
+
+
 PARSERS = {"srp": parse_srp, "pdv": parse_pdv, "anper": parse_anper, "actiroute": parse_actiroute,
-           "axefor": parse_axefor}
+           "axefor": parse_axefor, "mobilite": parse_mobilite}
 
 
 def learn_organiser(agr, code, url):
@@ -642,7 +748,12 @@ def main():
         prev = s["stages"]
         content, err = None, None
         try:
-            content = fetch_browser(src["url"]) if src.get("browser") else fetch(src["url"])
+            if src.get("paginate"):
+                content = fetch_browser_pages(src["url"], src["paginate"])
+            elif src.get("browser"):
+                content = fetch_browser(src["url"])
+            else:
+                content = fetch(src["url"])
             recs = PARSERS[src["parser"]](content, src, agr)
             if src["parser"] == "srp":
                 for r in recs:
@@ -675,6 +786,19 @@ def main():
                 "own": sum(1 for r in cur.values() if r["own"]),
             }
             stats[src["id"]]["sample"] = sample
+
+        if src.get("calibration"):
+            # lecture à vérifier : on garde la page et un aperçu, jamais d'historique ni de notification
+            if content is not None:
+                snap = os.path.join(DATA, "snapshots", f"{src['id']}.html")
+                os.makedirs(os.path.dirname(snap), exist_ok=True)
+                with open(snap, "wb") as f:
+                    f.write(content)
+            if err is None:
+                stats[src["id"]]["apercu"] = list(cur.values())[:8]
+            print(f"[{src['id']}] CALIBRAGE : " + (f"erreur : {err}" if err else f"{len(cur)} stages lus"))
+            s["stages"], s["baseline"] = {}, False
+            continue
 
         if err:
             s["fail"] = min(s["fail"] + 1, 3)
