@@ -2,7 +2,7 @@ name: veille
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -40,14 +40,11 @@ jobs:
         run: python veille.py
 
       # Actiroute charge sa liste en JavaScript : il faut un vrai navigateur, plus lent.
-      # On ne le lance donc qu'une fois sur trois (toutes les 15 minutes environ).
+      # Avec un passage par heure, il est lancé à chaque passage.
       - name: Actiroute à lancer ?
         id: actiroute
         run: |
-          m=$(date +%M)
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || [ $((10#$m % 15)) -lt 5 ]; then
-            echo "run=1" >> "$GITHUB_OUTPUT"
-          fi
+          echo "run=1" >> "$GITHUB_OUTPUT"
 
       - name: Installer le navigateur
         if: steps.actiroute.outputs.run == '1'
