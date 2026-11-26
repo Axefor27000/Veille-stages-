@@ -44,7 +44,7 @@ EMOJIS = {
 }
 SOURCES = {"axefor": "axefor.fr", "srp-eure": "stage-recuperation-points.com", "pdv-louviers": "stage-pointsdevue.fr",
            "pdv-vernon": "stage-pointsdevue.fr", "anper": "permis-a-points-anper.com",
-           "actiroute": "actiroute.com"}
+           "actiroute": "actiroute.com", "mobilite": "mobiliteclub.fr"}
 STATUTS = {"dispo": "places disponibles", "dernieres": "dernières places", "complet": "complet",
            "clos": "inscriptions closes", "ouvert": "inscriptions ouvertes", "?": ""}
 
