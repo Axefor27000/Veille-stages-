@@ -297,6 +297,29 @@ def emo(org):
     return EMOJIS.get(org, "⬜")
 
 
+def construire_changements(data, depuis, now):
+    """Mail « changement détecté » : les événements enregistrés depuis `depuis`.
+    Renvoie (objet, corps) ou None s'il n'y a rien à signaler."""
+    evs = [e for e in evenements(data, depuis) if e["source"] != "mobilite"]
+    if not evs:
+        return None
+    evs.sort(key=lambda e: e["ts"])
+    lignes = []
+    for e in evs:
+        t, txt = phrase_evenement(e)
+        ts = datetime.fromisoformat(e["ts"]).astimezone(TZ).strftime("%d/%m à %Hh%M")
+        lignes.append(f"{emo(e['organiser'])} <b>{esc(t)}</b> · {esc(txt)} <i>(détecté le {ts})</i>")
+    n = len(evs)
+    t0, txt0 = phrase_evenement(evs[0])
+    objet = f"Veille stages Eure : changement détecté ({t0.lower()}, {evs[0]['organiser']} {evs[0]['city']})"
+    if n > 1:
+        objet = f"Veille stages Eure : {n} changements détectés"
+    corps = (f"<h2>{n} changement{'s' if n > 1 else ''} détecté{'s' if n > 1 else ''}</h2>"
+             f"<p>{'<br>'.join(lignes)}</p>"
+             "<p><i>Le rapport complet reste envoyé chaque matin.</i></p>")
+    return objet, corps
+
+
 def construire_email(data, nb_semaines, demo, test, now):
     """Même contenu, mais uniquement avec les balises acceptées par l'envoi d'e-mail."""
     today = now.date()
@@ -528,10 +551,25 @@ def main():
     ap.add_argument("--test", action="store_true")
     ap.add_argument("--email", action="store_true",
                     help="version e-mail (émojis de couleur, balises autorisées uniquement)")
+    ap.add_argument("--changes", metavar="DEPUIS_ISO",
+                    help="mail « changement détecté » : événements depuis cette date (ISO) ; "
+                         "écrit le corps dans --out, affiche l'objet, code de sortie 3 s'il n'y a rien")
     ap.add_argument("--style", choices=["cadres", "simple"], default="simple",
                     help="mise en page de la version e-mail (défaut : simple = version n°2 validée)")
     a = ap.parse_args()
     now = datetime.now(TZ)
+    if a.changes:
+        depuis = datetime.fromisoformat(a.changes.replace("Z", "+00:00"))
+        if depuis.tzinfo is None:
+            depuis = depuis.replace(tzinfo=TZ)
+        res = construire_changements(a.data, depuis, now)
+        if res is None:
+            print("RIEN")
+            raise SystemExit(3)
+        with open(a.out, "w", encoding="utf-8") as f:
+            f.write(res[1])
+        print("OBJET: " + res[0])
+        return
     if a.email:
         build = construire_email_cadres if a.style == "cadres" else construire_email
         with open(a.out, "w", encoding="utf-8") as f:
