@@ -105,6 +105,21 @@ def charger(data):
     return list(merged.values())
 
 
+def charger_taux(data):
+    try:
+        with open(os.path.join(data, "taux.json"), encoding="utf-8") as f:
+            return {k: v for k, v in json.load(f).items() if not k.startswith("_")}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def texte_taux(taux, org):
+    t = taux.get(org)
+    if t:
+        return f" ({t['pct']} % de réalisation sur {t['mois']} mois)"
+    return " (taux non publié)"
+
+
 def evenements(data, depuis):
     path = os.path.join(data, "events.csv")
     out = []
@@ -132,7 +147,8 @@ def phrase_evenement(e):
         return "Nouveau stage", f"{qui} : {e['price_new']} €"
     if t == "SUPPRIME":
         j = f" à J-{e['days_before']}" if e["days_before"] != "" else ""
-        return "Stage supprimé", f"{qui}{j} (dernier statut : {STATUTS.get(e['status_old'], e['status_old'])})"
+        st = STATUTS.get(e["status_old"], e["status_old"])
+        return "Stage supprimé", f"{qui}{j}" + (f" (dernier statut : {st})" if st else "")
     if t == "PRIX":
         sens = "baisse" if float(e["price_new"]) < float(e["price_old"]) else "hausse"
         return f"Prix en {sens}", f"{qui} : {e['price_old']} → {e['price_new']} €"
@@ -298,8 +314,9 @@ def construire_email(data, nb_semaines, demo, test, now):
     for m in stages:
         cnt[m["organiser"]] += 1
     ordre = sorted(cnt, key=lambda o: (o != "Axéfor", -cnt[o], o))
+    taux = charger_taux(data)
     h.append(f"<p><b>En bref</b> : {len(stages)} stages sur la période, dont {cnt.get('Axéfor', 0)} chez Axéfor.<br>"
-             + "<br>".join(f"{emo(o)} {esc(o)} : {cnt[o]}" for o in ordre) + "</p>")
+             + "<br>".join(f"{emo(o)} {esc(o)} : {cnt[o]}{esc(texte_taux(taux, o))}" for o in ordre) + "</p>")
 
     evs = evenements(data, now - timedelta(hours=24))
     h.append("<h3>Événements des dernières 24 h</h3>")
