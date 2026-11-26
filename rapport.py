@@ -92,7 +92,9 @@ def charger(data):
                                       "start": date.fromisoformat(r["start"]),
                                       "end": date.fromisoformat(r["end"] or r["start"]),
                                       "own": r["own"], "prix": {}, "statut": "?",
-                                      "places": None})
+                                      "places": None, "number": None})
+            if r.get("number") and not m["number"]:
+                m["number"] = r["number"]  # le n° vient de l'agrégateur ou du site de l'organisateur
             m["prix"][SOURCES.get(sid, sid)] = r["price"]
             if sid == "srp-eure" and r["status"] != "?":
                 m["statut"] = r["status"]
@@ -123,7 +125,8 @@ def phrase_evenement(e):
         s = date.fromisoformat(e["start"])
         d = f"{s.day} {MOIS_C[s.month]}"
     site = SOURCES.get(e["source"], e["source"])
-    qui = f"{e['organiser']}, {e['city']}, {d} (sur {site})"
+    num = f", n° {e['number']}" if e.get("number") else ""
+    qui = f"{e['organiser']}, {e['city']}, {d} (sur {site}{num})"
     t = e["type"]
     if t == "NOUVEAU":
         return "Nouveau stage", f"{qui} : {e['price_new']} €"
@@ -336,7 +339,8 @@ def construire_email(data, nb_semaines, demo, test, now):
                 if m["places"] is not None and m["statut"] == "ouvert":
                     st = f"{m['places']} places restantes"
                 rows.append(f"{emo(m['organiser'])} <b>{esc(m['organiser'])}</b> · {esc(m['city'])} · "
-                            f"{prix_supports(m['prix'])}" + (f" · {st}" if st else ""))
+                            f"{prix_supports(m['prix'])}" + (f" · {st}" if st else "")
+                            + (f" · n° {esc(m['number'])}" if m["number"] else ""))
             h.append(f"<p><b>{esc(label_jours(s_, e_))} = {len(g)} stage{'s' if len(g) != 1 else ''}</b><br>"
                      + "<br>".join(rows) + "</p>")
 
