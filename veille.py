@@ -636,7 +636,7 @@ def learn_organiser(agr, code, url):
 
 EVENT_COLS = ["ts", "source", "key", "type", "organiser", "city", "start", "end", "price_old",
               "price_new", "status_old", "status_new", "places_old", "places_new",
-              "days_before", "own"]
+              "days_before", "own", "number"]
 
 
 def event(now, etype, rec, **kw):
@@ -644,7 +644,7 @@ def event(now, etype, rec, **kw):
     e.update({"ts": now.isoformat(timespec="seconds"), "source": rec["source"],
               "key": rec["key"], "type": etype, "organiser": rec["organiser"],
               "city": rec["city"], "start": rec["start"] or "", "end": rec.get("end") or "",
-              "own": int(rec["own"])})
+              "own": int(rec["own"]), "number": rec.get("number") or ""})
     e.update(kw)
     return e
 
@@ -695,7 +695,8 @@ SITE = {"axefor": "axefor.fr", "srp-eure": "stage-recuperation-points.com", "pdv
 
 
 def message(e):
-    who = f"{e['organiser']} {e['city']} (sur {SITE.get(e['source'], e['source'])})"
+    num = f" · n° {e['number']}" if e.get("number") else ""
+    who = f"{e['organiser']} {e['city']} (sur {SITE.get(e['source'], e['source'])}{num})"
     d = fmt_range(e["start"] or None, e["end"] or None)
     t = e["type"]
     if t == "NOUVEAU":
@@ -731,6 +732,14 @@ def append_events(events):
         return
     path = os.path.join(DATA, "events.csv")
     new = not os.path.exists(path)
+    if not new:  # ancien journal sans colonne « number » : on l'ajoute (vide) une fois pour toutes
+        with open(path, newline="", encoding="utf-8") as f:
+            rows = list(csv.reader(f))
+        if rows and "number" not in rows[0]:
+            rows[0].append("number")
+            rows[1:] = [r + [""] * (len(rows[0]) - len(r)) for r in rows[1:]]
+            with open(path, "w", newline="", encoding="utf-8") as f:
+                csv.writer(f).writerows(rows)
     with open(path, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=EVENT_COLS)
         if new:
