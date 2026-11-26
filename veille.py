@@ -747,6 +747,52 @@ def append_events(events):
         w.writerows(events)
 
 
+# --------------------------------------------------- taux de réalisation par organisateur
+
+TAUX_RE = re.compile(r"(\d{1,3})\s*%\s+des\s+stages\s+programm\w+\s+sur\s+cet\s+agr\w+\s+depuis\s+les\s+"
+                     r"(\d+)\s+derniers\s+mois", re.I)
+
+
+def maj_taux(state, agr, now):
+    """Une fois par jour : lit, sur la fiche d'un stage de l'agrégateur, le taux de réalisation de
+    chaque organisateur (« 93 % des stages programmés sur cet agrément depuis les 6 derniers mois
+    ont été réalisés »). Dernières valeurs dans taux.json, historique des changements dans taux.csv."""
+    path = os.path.join(DATA, "taux.json")
+    taux = load_json(path, {})
+    today = now.date().isoformat()
+    if taux.get("_date") == today:
+        return
+    urls = {}
+    for r in state["sources"].get("srp-eure", {}).get("stages", {}).values():
+        if r.get("agrement") and r.get("url") and r["agrement"] not in urls:
+            urls[r["agrement"]] = r["url"]
+    hist = []
+    for code, url in urls.items():
+        try:
+            txt = clean(BeautifulSoup(fetch(url), "html.parser").get_text(" "))
+        except Exception:  # noqa: BLE001
+            continue
+        m = TAUX_RE.search(txt)
+        if not m:
+            continue
+        org = agr.get(code, code)
+        new = {"pct": int(m.group(1)), "mois": int(m.group(2)), "agrement": code, "date": today}
+        if taux.get(org, {}).get("pct") != new["pct"]:
+            hist.append([now.isoformat(timespec="seconds"), org, code, new["pct"], new["mois"]])
+        taux[org] = new
+        time.sleep(1)
+    taux["_date"] = today
+    save_json(path, taux)
+    if hist:
+        hpath = os.path.join(DATA, "taux.csv")
+        new_file = not os.path.exists(hpath)
+        with open(hpath, "a", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            if new_file:
+                w.writerow(["ts", "organiser", "agrement", "pct", "mois"])
+            w.writerows(hist)
+
+
 # ------------------------------------------------------------------------ main
 
 
@@ -876,6 +922,8 @@ def main():
     if state["_meta"].get("heartbeat") != today:
         state["_meta"]["heartbeat"] = today
     append_events([e for e in all_events])
+    if MODE != "browser":
+        maj_taux(state, agr, now)
     save_json(os.path.join(DATA, "state.json"), state)
     save_json(os.path.join(DATA, "last_run.json"), stats)
     if learned:
