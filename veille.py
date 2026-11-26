@@ -244,7 +244,7 @@ def _anti_robot(titre, html_bas):
         "etes-vous un robot", "êtes-vous un robot", "access denied"))
 
 
-def fetch_browser_pages(url, param="page_index", max_pages=4, pause_ms=3000):
+def fetch_browser_pages(url, param="page_index", max_pages=4, pause_ms=3000, tolerant=False):
     """Lit les pages 1, 2, 3… d'une liste dans un vrai navigateur, comme un visiteur normal.
     S'arrête (erreur) si robots.txt l'interdit, en cas de refus (401/403/429/503) ou de contrôle
     anti-robot : on ne cherche jamais à contourner."""
@@ -272,8 +272,19 @@ def fetch_browser_pages(url, param="page_index", max_pages=4, pause_ms=3000):
             for n in range(1, max_pages + 1):
                 q = dict(parse_qsl(u.query))
                 q[param] = str(n)
-                resp = page.goto(urlunparse(u._replace(query=urlencode(q))),
-                                 wait_until="networkidle", timeout=45000)
+                try:
+                    # « networkidle » n'arrive jamais sur les sites qui gardent des échanges ouverts :
+                    # on attend le chargement de la page, puis on laisse le JavaScript s'afficher.
+                    resp = page.goto(urlunparse(u._replace(query=urlencode(q))),
+                                     wait_until="domcontentloaded", timeout=45000)
+                    try:
+                        page.wait_for_load_state("networkidle", timeout=8000)
+                    except Exception:  # noqa: BLE001
+                        page.wait_for_timeout(3000)
+                except Exception as e:  # noqa: BLE001
+                    if tolerant and parts:
+                        break  # calibrage : on garde les pages déjà lues
+                    raise RuntimeError(f"page {n} illisible : {str(e).splitlines()[0]}") from e
                 status = resp.status if resp else 0
                 if status in (401, 403, 429, 503):
                     raise RuntimeError(f"accès refusé (HTTP {status})")
@@ -749,7 +760,8 @@ def main():
         content, err = None, None
         try:
             if src.get("paginate"):
-                content = fetch_browser_pages(src["url"], src["paginate"])
+                content = fetch_browser_pages(src["url"], src["paginate"],
+                                              tolerant=bool(src.get("calibration")))
             elif src.get("browser"):
                 content = fetch_browser(src["url"])
             else:
